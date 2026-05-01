@@ -20,9 +20,11 @@ import (
 	"code.gitea.io/gitea/modules/git"
 	"code.gitea.io/gitea/modules/git/attribute"
 	"code.gitea.io/gitea/modules/highlight"
+	"code.gitea.io/gitea/modules/lfs"
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/markup"
 	"code.gitea.io/gitea/modules/setting"
+	"code.gitea.io/gitea/modules/typesniffer"
 	"code.gitea.io/gitea/modules/util"
 	"code.gitea.io/gitea/services/context"
 	issue_service "code.gitea.io/gitea/services/issue"
@@ -164,7 +166,12 @@ func prepareFileView(ctx *context.Context, entry *git.TreeEntry) {
 	blob := entry.Blob()
 
 	ctx.Data["Title"] = ctx.Tr("repo.file.title", ctx.Repo.Repository.Name+"/"+ctx.Repo.TreePath, ctx.Repo.RefFullName.ShortName())
-	ctx.Data["FileIsSymlink"] = entry.IsLink()
+	isAnnex := false
+	if entry.IsLink() {
+		target, _ := blob.GetBlobContent(1024)
+		isAnnex = git.IsAnnexSymlink(target)
+	}
+	ctx.Data["FileIsSymlink"] = entry.IsLink() && !isAnnex
 	ctx.Data["FileTreePath"] = ctx.Repo.TreePath
 	ctx.Data["RawFileLink"] = ctx.Repo.RepoLink + "/raw/" + ctx.Repo.RefTypeNameSubURL() + "/" + util.PathEscapeSegments(ctx.Repo.TreePath)
 
@@ -198,12 +205,35 @@ func prepareFileView(ctx *context.Context, entry *git.TreeEntry) {
 		}
 	}
 
-	// Don't call any other repository functions depends on git.Repository until the dataRc closed to
-	// avoid creating an unnecessary temporary cat file.
-	buf, dataRc, fInfo, err := getFileReader(ctx, ctx.Repo.Repository.ID, blob)
-	if err != nil {
-		ctx.ServerError("getFileReader", err)
-		return
+	// If this is a git-annex symlink, serve the actual annex object content
+	// instead of showing the symlink target text.
+	var buf []byte
+	var dataRc io.ReadCloser
+	var fInfo *fileInfo
+	if isAnnex {
+		target, _ := blob.GetBlobContent(1024)
+		annexRc, annexSize, annexErr := git.OpenAnnexObject(ctx.Repo.Repository.RepoPath(), strings.TrimSpace(target))
+		if annexErr == nil {
+			prefetchBuf := make([]byte, lfs.MetaFileMaxSize)
+			n, _ := util.ReadAtMost(annexRc, prefetchBuf)
+			prefetchBuf = prefetchBuf[:n]
+			buf = prefetchBuf
+			dataRc = annexRc
+			fInfo = &fileInfo{
+				blobOrLfsSize: annexSize,
+				st:            typesniffer.DetectContentType(prefetchBuf),
+			}
+		}
+	}
+	if fInfo == nil {
+		// Don't call any other repository functions depends on git.Repository until the dataRc closed to
+		// avoid creating an unnecessary temporary cat file.
+		var err error
+		buf, dataRc, fInfo, err = getFileReader(ctx, ctx.Repo.Repository.ID, blob)
+		if err != nil {
+			ctx.ServerError("getFileReader", err)
+			return
+		}
 	}
 	defer dataRc.Close()
 

@@ -5,6 +5,7 @@
 package repo
 
 import (
+	"strings"
 	"time"
 
 	git_model "code.gitea.io/gitea/models/git"
@@ -27,6 +28,17 @@ func ServeBlobOrLFS(ctx *context.Context, blob *git.Blob, lastModified *time.Tim
 	lfsPointerBuf, err := blob.GetBlobBytes(lfs.MetaFileMaxSize)
 	if err != nil {
 		return err
+	}
+
+	// Check if the blob content is a git-annex symlink target
+	if target := strings.TrimSpace(string(lfsPointerBuf)); git.IsAnnexSymlink(target) {
+		rc, size, annexErr := git.OpenAnnexObject(ctx.Repo.Repository.RepoPath(), target)
+		if annexErr == nil {
+			defer rc.Close()
+			httplib.ServeUserContentByReader(ctx.Req, ctx.Resp, size, rc, httplib.ServeHeaderOptions{Filename: ctx.Repo.TreePath})
+			return nil
+		}
+		// annex object not available, fall through to serve blob as-is
 	}
 
 	pointer, _ := lfs.ReadPointerFromBuffer(lfsPointerBuf)

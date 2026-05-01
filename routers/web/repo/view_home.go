@@ -350,6 +350,10 @@ func redirectFollowSymlink(ctx *context.Context, treePathEntry *git.TreeEntry) b
 		return false
 	}
 	if treePathEntry.IsLink() {
+		// Don't follow git-annex symlinks; let the normal file view handle them
+		if target, err := treePathEntry.Blob().GetBlobContent(1024); err == nil && git.IsAnnexSymlink(target) {
+			return false
+		}
 		if res, err := git.EntryFollowLinks(ctx.Repo.Commit, ctx.Repo.TreePath, treePathEntry); err == nil {
 			redirect := ctx.Repo.RepoLink + "/src/" + ctx.Repo.RefTypeNameSubURL() + "/" + util.PathEscapeSegments(res.TargetFullPath) + "?" + ctx.Req.URL.RawQuery
 			ctx.Redirect(redirect)
