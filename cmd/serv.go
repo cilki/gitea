@@ -199,6 +199,12 @@ func runServ(ctx context.Context, c *cli.Command) error {
 		return fail(ctx, "Too few arguments", "Too few arguments in cmd: %s", cmd)
 	}
 
+	// git-annex-shell has a different argument layout than standard git commands,
+	// so it must be handled before the standard repo path parsing below.
+	if git.IsAllowedVerbForServeAnnex(sshCmdArgs[0]) {
+		return runServAnnex(ctx, c, sshCmdArgs, keyID)
+	}
+
 	repoPath := strings.TrimPrefix(sshCmdArgs[1], "/")
 	repoPathFields := strings.SplitN(repoPath, "/", 2)
 	if len(repoPathFields) != 2 {
@@ -233,14 +239,6 @@ func runServ(ctx context.Context, c *cli.Command) error {
 	verb, lfsVerb := sshCmdArgs[0], ""
 	if !git.IsAllowedVerbForServe(verb) {
 		return fail(ctx, "Unknown git command", "Unknown git command %s", verb)
-	}
-
-	// git-annex-shell has a different argument layout:
-	//   git-annex-shell '<subcommand>' '<repo-path>' [-- <key> ...]
-	// vs the standard git commands:
-	//   git-upload-pack '<repo-path>'
-	if git.IsAllowedVerbForServeAnnex(verb) {
-		return runServAnnex(ctx, c, sshCmdArgs, keyID, username)
 	}
 
 	if git.IsAllowedVerbForServeLfs(verb) {
@@ -357,7 +355,7 @@ func runServ(ctx context.Context, c *cli.Command) error {
 
 // runServAnnex handles SSH sessions for git-annex-shell.
 // The argument layout is: git-annex-shell '<subcommand>' '<repo-path>' [-- <key> ...]
-func runServAnnex(ctx context.Context, c *cli.Command, sshCmdArgs []string, keyID int64, username string) error {
+func runServAnnex(ctx context.Context, c *cli.Command, sshCmdArgs []string, keyID int64) error {
 	// git-annex-shell requires at least: git-annex-shell <subcommand> <path>
 	if len(sshCmdArgs) < 3 {
 		return fail(ctx, "Too few arguments for git-annex-shell", "Too few arguments in cmd: %v", sshCmdArgs)
@@ -382,11 +380,17 @@ func runServAnnex(ctx context.Context, c *cli.Command, sshCmdArgs []string, keyI
 		return fail(ctx, "Invalid repo name", "Invalid repo name: %s", repoName)
 	}
 
-	requestedMode := git.AnnexAccessMode(annexSubVerb)
-
-	results, extra := private.ServCommand(ctx, keyID, ownerName, repoName, requestedMode, git.CmdVerbAnnexShell, annexSubVerb)
+	// Determine access like gitolite: try write first, fall back to read with READONLY.
+	// This avoids needing to map individual subcommands to access modes, and lets
+	// git-annex-shell itself enforce read-only restrictions.
+	readonly := false
+	results, extra := private.ServCommand(ctx, keyID, ownerName, repoName, perm.AccessModeWrite, git.CmdVerbAnnexShell, annexSubVerb)
 	if extra.HasError() {
-		return fail(ctx, extra.UserMsg, "ServCommand failed: %s", extra.Error)
+		results, extra = private.ServCommand(ctx, keyID, ownerName, repoName, perm.AccessModeRead, git.CmdVerbAnnexShell, annexSubVerb)
+		if extra.HasError() {
+			return fail(ctx, extra.UserMsg, "ServCommand failed: %s", extra.Error)
+		}
+		readonly = true
 	}
 
 	// Build the absolute repo path from the resolved repository info
@@ -414,7 +418,11 @@ func runServAnnex(ctx context.Context, c *cli.Command, sshCmdArgs []string, keyI
 		repo_module.EnvRepoID+"="+strconv.FormatInt(results.RepoID, 10),
 		repo_module.EnvKeyID+"="+strconv.FormatInt(results.KeyID, 10),
 		repo_module.EnvAppURL+"="+setting.AppURL,
+		"GIT_ANNEX_SHELL_LIMITED=1",
 	)
+	if readonly {
+		command.Env = append(command.Env, "GIT_ANNEX_SHELL_READONLY=1")
+	}
 
 	if err := command.Run(); err != nil {
 		return fail(ctx, "Failed to execute git-annex-shell command", "Failed to execute git-annex-shell command: %v", err)

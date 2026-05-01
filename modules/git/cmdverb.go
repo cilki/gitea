@@ -3,10 +3,6 @@
 
 package git
 
-import (
-	"code.gitea.io/gitea/models/perm"
-)
-
 const (
 	CmdVerbUploadPack      = "git-upload-pack"
 	CmdVerbUploadArchive   = "git-upload-archive"
@@ -25,8 +21,7 @@ func IsAllowedVerbForServe(verb string) bool {
 		CmdVerbUploadArchive,
 		CmdVerbReceivePack,
 		CmdVerbLfsAuthenticate,
-		CmdVerbLfsTransfer,
-		CmdVerbAnnexShell:
+		CmdVerbLfsTransfer:
 		return true
 	}
 	return false
@@ -46,12 +41,3 @@ func IsAllowedVerbForServeAnnex(verb string) bool {
 	return verb == CmdVerbAnnexShell
 }
 
-// AnnexAccessMode returns the access mode required for a git-annex-shell subcommand.
-func AnnexAccessMode(subVerb string) perm.AccessMode {
-	switch subVerb {
-	case "recvkey", "dropkey", "lockcontent", "unlockcontent":
-		return perm.AccessModeWrite
-	default: // configlist, inannex, sendkey, notifychanges, p2pstdio, etc.
-		return perm.AccessModeRead
-	}
-}
