@@ -201,6 +201,12 @@ func runServ(ctx context.Context, c *cli.Command) error {
 		return fail(ctx, "Too few arguments", "Too few arguments in cmd: %s", cmd)
 	}
 
+	// git-annex-shell has a different argument layout than standard git commands,
+	// so it must be handled before the standard repo path parsing below.
+	if git.IsAllowedVerbForServeAnnex(sshCmdArgs[0]) {
+		return runServAnnex(ctx, c, sshCmdArgs, keyID)
+	}
+
 	repoPath := strings.TrimPrefix(sshCmdArgs[1], "/")
 	repoPathFields := strings.SplitN(repoPath, "/", 2)
 	if len(repoPathFields) != 2 {
@@ -345,6 +351,91 @@ func runServ(ctx context.Context, c *cli.Command) error {
 	// Update user key activity.
 	if results.KeyID > 0 {
 		if err = private.UpdatePublicKeyInRepo(ctx, results.KeyID, results.RepoID); err != nil {
+			return fail(ctx, "Failed to update public key", "UpdatePublicKeyInRepo: %v", err)
+		}
+	}
+
+	return nil
+}
+
+// runServAnnex handles SSH sessions for git-annex-shell.
+// The argument layout is: git-annex-shell '<subcommand>' '<repo-path>' [-- <key> ...]
+func runServAnnex(ctx context.Context, c *cli.Command, sshCmdArgs []string, keyID int64) error {
+	// git-annex-shell requires at least: git-annex-shell <subcommand> <path>
+	if len(sshCmdArgs) < 3 {
+		return fail(ctx, "Too few arguments for git-annex-shell", "Too few arguments in cmd: %v", sshCmdArgs)
+	}
+
+	annexSubVerb := sshCmdArgs[1]
+
+	// Parse owner/repo from the repo path argument.
+	// git-annex sends paths like "/~/owner/repo.git" or "/owner/repo.git"
+	annexRepoPath := sshCmdArgs[2]
+	annexRepoPath = strings.TrimPrefix(annexRepoPath, "/~/")
+	annexRepoPath = strings.TrimPrefix(annexRepoPath, "/")
+	repoPathFields := strings.SplitN(annexRepoPath, "/", 2)
+	if len(repoPathFields) != 2 {
+		return fail(ctx, "Invalid repository path", "Invalid repository path: %v", annexRepoPath)
+	}
+
+	ownerName := repoPathFields[0]
+	repoName := strings.TrimSuffix(repoPathFields[1], ".git")
+
+	if !repo_model.IsValidSSHAccessRepoName(repoName) {
+		return fail(ctx, "Invalid repo name", "Invalid repo name: %s", repoName)
+	}
+
+	// Determine access like gitolite: try write first, fall back to read with READONLY.
+	// This avoids needing to map individual subcommands to access modes, and lets
+	// git-annex-shell itself enforce read-only restrictions.
+	readonly := false
+	results, extra := private.ServCommand(ctx, keyID, ownerName, repoName, perm.AccessModeWrite, git.CmdVerbAnnexShell, annexSubVerb)
+	if extra.HasError() {
+		results, extra = private.ServCommand(ctx, keyID, ownerName, repoName, perm.AccessModeRead, git.CmdVerbAnnexShell, annexSubVerb)
+		if extra.HasError() {
+			return fail(ctx, extra.UserMsg, "ServCommand failed: %s", extra.Error)
+		}
+		readonly = true
+	}
+
+	// Build the absolute repo path from the resolved repository info
+	absRepoPath := filepath.Join(setting.RepoRootPath, repo_model.RelativePath(results.OwnerName, results.RepoName))
+
+	// Re-assemble arguments for git-annex-shell with the resolved absolute path:
+	//   git-annex-shell <subcommand> <abs-repo-path> [-- <key> ...]
+	annexArgs := []string{annexSubVerb, absRepoPath}
+	if len(sshCmdArgs) > 3 {
+		annexArgs = append(annexArgs, sshCmdArgs[3:]...)
+	}
+
+	command := exec.CommandContext(ctx, "git-annex-shell", annexArgs...)
+	process.SetSysProcAttribute(command)
+	command.Stdout = os.Stdout
+	command.Stdin = os.Stdin
+	command.Stderr = os.Stderr
+	command.Env = append(command.Env, os.Environ()...)
+	command.Env = append(command.Env,
+		repo_module.EnvRepoName+"="+results.RepoName,
+		repo_module.EnvRepoUsername+"="+results.OwnerName,
+		repo_module.EnvPusherName+"="+results.UserName,
+		repo_module.EnvPusherEmail+"="+results.UserEmail,
+		repo_module.EnvPusherID+"="+strconv.FormatInt(results.UserID, 10),
+		repo_module.EnvRepoID+"="+strconv.FormatInt(results.RepoID, 10),
+		repo_module.EnvKeyID+"="+strconv.FormatInt(results.KeyID, 10),
+		repo_module.EnvAppURL+"="+setting.AppURL,
+		"GIT_ANNEX_SHELL_LIMITED=1",
+	)
+	if readonly {
+		command.Env = append(command.Env, "GIT_ANNEX_SHELL_READONLY=1")
+	}
+
+	if err := command.Run(); err != nil {
+		return fail(ctx, "Failed to execute git-annex-shell command", "Failed to execute git-annex-shell command: %v", err)
+	}
+
+	// Update user key activity.
+	if results.KeyID > 0 {
+		if err := private.UpdatePublicKeyInRepo(ctx, results.KeyID, results.RepoID); err != nil {
 			return fail(ctx, "Failed to update public key", "UpdatePublicKeyInRepo: %v", err)
 		}
 	}
