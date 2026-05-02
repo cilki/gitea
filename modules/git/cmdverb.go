@@ -41,3 +41,9 @@ func IsAllowedVerbForServeAnnex(verb string) bool {
 	return verb == CmdVerbAnnexShell
 }
 
+// AnnexShellExecutable is the resolved path to git-annex-shell. It is
+// initialized by InitSimple using setting.Git.AnnexShellPath and must be
+// used instead of a plain "git-annex-shell" string so that gitea serv
+// (spawned by sshd with a restricted PATH) can find the binary.
+var AnnexShellExecutable = CmdVerbAnnexShell
+

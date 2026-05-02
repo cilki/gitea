@@ -90,6 +90,10 @@ func ServCommand(ctx *context.PrivateContext) {
 		KeyID:     keyID,
 	}
 
+	if verb == git.CmdVerbAnnexShell {
+		log.Info("git-annex-shell: key=%d %s/%s mode=%d", keyID, ownerName, repoName, mode)
+	}
+
 	// Now because we're not translating things properly let's just default some English strings here
 	modeString := "read"
 	if mode > perm.AccessModeRead {

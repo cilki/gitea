@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -149,6 +150,19 @@ func InitSimple() error {
 
 	if err := gitcmd.SetExecutablePath(setting.Git.Path); err != nil {
 		return err
+	}
+
+	// Resolve the git-annex-shell path. A configured absolute path is used
+	// as-is; otherwise we do a PATH lookup. Failure is non-fatal since
+	// git-annex-shell is optional.
+	annexShellPath := setting.Git.AnnexShellPath
+	if annexShellPath == "" {
+		annexShellPath = CmdVerbAnnexShell
+	}
+	if absPath, err := exec.LookPath(annexShellPath); err == nil {
+		AnnexShellExecutable = absPath
+	} else if filepath.IsAbs(annexShellPath) {
+		AnnexShellExecutable = annexShellPath // use the configured absolute path even if LookPath fails
 	}
 
 	var err error

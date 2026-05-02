@@ -403,7 +403,7 @@ func runServAnnex(ctx context.Context, c *cli.Command, sshCmdArgs []string, keyI
 		annexArgs = append(annexArgs, sshCmdArgs[3:]...)
 	}
 
-	command := exec.CommandContext(ctx, "git-annex-shell", annexArgs...)
+	command := exec.CommandContext(ctx, git.AnnexShellExecutable, annexArgs...)
 	process.SetSysProcAttribute(command)
 	command.Stdout = os.Stdout
 	command.Stdin = os.Stdin

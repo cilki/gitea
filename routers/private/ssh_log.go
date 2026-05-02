@@ -15,19 +15,19 @@ import (
 
 // SSHLog hook to response ssh log
 func SSHLog(ctx *context.PrivateContext) {
-	if !setting.Log.EnableSSHLog {
-		ctx.Status(http.StatusOK)
-		return
-	}
-
 	opts := web.GetForm(ctx).(*private.SSHLogOption)
 
 	if opts.IsError {
+		// Always log SSH errors so they are visible in the system journal even
+		// when EnableSSHLog is false. This is important for diagnosing failures
+		// in git-annex-shell and other SSH sub-commands.
 		log.Error("ssh: %v", opts.Message)
 		ctx.Status(http.StatusOK)
 		return
 	}
 
-	log.Debug("ssh: %v", opts.Message)
+	if setting.Log.EnableSSHLog {
+		log.Debug("ssh: %v", opts.Message)
+	}
 	ctx.Status(http.StatusOK)
 }

@@ -15,6 +15,7 @@ import (
 // Git settings
 var Git = struct {
 	Path                 string
+	AnnexShellPath       string
 	HomePath             string
 	DisableDiffHighlight bool
 
